@@ -76,10 +76,19 @@ String message_dont_understand = ""; // Add for Global language
 /// 接続：Wifiは[スマホアプリ(EspTouch)]、また[APIキーはブラウザ]から設定します。
 
 /// I2C接続のピン番号 // Add for SSD1306
-#define I2C_SDA_PIN 21
-#define I2C_SCL_PIN 25
-/// LEDストリップのピン番号
-#define LED_PIN     27
+#ifdef ATOMS3R
+  // ATOMS3R AI Chatbot Kit の設定
+  #define I2C_SDA_PIN 38  // G38 (I2C SDA)
+  #define I2C_SCL_PIN 39  // G39 (I2C SCL)
+  /// LEDストリップのピン番号
+  #define LED_PIN     35  // G35 (内蔵 RGB LED)
+#else
+  // ATOM Echo の設定（後方互換性）
+  #define I2C_SDA_PIN 21  // G21 (I2C SDA)
+  #define I2C_SCL_PIN 25  // G25 (I2C SCL)
+  /// LEDストリップのピン番号
+  #define LED_PIN     27  // G27 (内蔵 RGB LED)
+#endif
 /// LEDストリップのLED数
 #define NUM_LEDS    1
 /// LED明るさ
