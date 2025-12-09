@@ -18,7 +18,9 @@
 ***/
 
 #include <Arduino.h>
-#include <M5UnitGLASS2.h> // Add for SSD1306
+#ifndef ATOMS3R
+#include <M5UnitGLASS2.h> // Add for SSD1306 (only for ATOM Echo with external display)
+#endif
 #include <SPIFFS.h>       // Add for Web Setting
 #include <M5Unified.h>
 #include <nvs.h>          // Add for Web Setting
@@ -77,17 +79,35 @@ String message_dont_understand = ""; // Add for Global language
 
 /// I2C接続のピン番号 // Add for SSD1306
 #ifdef ATOMS3R
-  // ATOMS3R AI Chatbot Kit の設定
-  #define I2C_SDA_PIN 38  // G38 (I2C SDA)
+  // ATOMS3R + Atomic Echo Base の設定
+  #define I2C_SDA_PIN 38  // G38 (I2C SDA) - ES8311制御用
   #define I2C_SCL_PIN 39  // G39 (I2C SCL)
   /// LEDストリップのピン番号
   #define LED_PIN     35  // G35 (内蔵 RGB LED)
+  /// Groveピン (Serial1用) - Atomic Echo Base 経由
+  #define GROVE_RX_PIN 5  // G5 (Atomic Echo BaseのGrove)
+  #define GROVE_TX_PIN 6  // G6 (Atomic Echo BaseのGrove)
+  /// 内蔵ディスプレイを使用するかどうか（外部ディスプレイ M5UnitGLASS2 を使用しない場合はtrue）
+  #define USE_INTERNAL_DISPLAY true
+  /// Atomic Echo Base (ES8311) を使用 - platformio.iniで定義されていない場合のデフォルト
+  #ifndef USE_ATOMIC_ECHO_BASE
+    #define USE_ATOMIC_ECHO_BASE true
+  #endif
 #else
   // ATOM Echo の設定（後方互換性）
   #define I2C_SDA_PIN 21  // G21 (I2C SDA)
   #define I2C_SCL_PIN 25  // G25 (I2C SCL)
   /// LEDストリップのピン番号
   #define LED_PIN     27  // G27 (内蔵 RGB LED)
+  /// Groveピン (Serial1用)
+  #define GROVE_RX_PIN 32
+  #define GROVE_TX_PIN 26
+  /// 外部ディスプレイを使用
+  #define USE_INTERNAL_DISPLAY false
+  /// 内蔵スピーカー・マイクを使用
+  #ifndef USE_ATOMIC_ECHO_BASE
+    #define USE_ATOMIC_ECHO_BASE false
+  #endif
 #endif
 /// LEDストリップのLED数
 #define NUM_LEDS    1
@@ -960,55 +980,79 @@ void lipSync(void *args)  // Add for M5 avatar
 }
 
 void Wifi_setup() { // Add for Web Setting (SmartConfig)
-  // Serial.println("接続中:WiFi"); M5.Display.println("接続中:WiFi");
   Serial.println("Connect:WiFi"); M5.Display.println("Connect:WiFi");
-  WiFi.disconnect();
-  WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_STA); 
-  WiFi.begin();
+  
+  // WiFi初期化
+  WiFi.disconnect(true, true);  // 切断してNVSのWiFi設定もクリア
+  delay(500);
+  WiFi.mode(WIFI_OFF);
+  delay(500);
+  WiFi.mode(WIFI_STA);
+  delay(500);
+  
+  // 保存されたWiFi情報があるか確認
+  String savedSSID = WiFi.SSID();
+  Serial.printf("Saved SSID: [%s]\n", savedSSID.c_str());
+  
+  if (savedSSID.length() > 0) {
+    // 保存されたWiFi情報で接続を試みる
+    Serial.println("Trying saved WiFi credentials...");
+    WiFi.begin();
 
-  /// 前回接続時情報で接続する
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print("."); M5.Display.print(".");
-    delay(500);
-    /// 10秒以上接続できなかったら抜ける
-    if ( 10000 < millis() ) {
-      break;
+    /// 前回接続時情報で接続する
+    unsigned long startTime = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+      Serial.print("."); M5.Display.print(".");
+      delay(500);
+      /// 10秒以上接続できなかったら抜ける
+      if ( millis() - startTime > 10000 ) {
+        break;
+      }
     }
+    Serial.println(""); M5.Display.println("");
   }
-  Serial.println(""); M5.Display.println("");
+  
   /// 未接続の場合にはSmartConfig待受
   if ( WiFi.status() != WL_CONNECTED ) {
+    Serial.println("Starting SmartConfig...");
+    Serial.println("Use EspTouch app to configure WiFi");
     WiFi.mode(WIFI_STA);
+    delay(100);
     WiFi.beginSmartConfig();
-    // Serial.println("接続中:SmartConfig"); M5.Display.println("接続中:SmartConfig");
     Serial.println("Connect:SmartConfig"); M5.Display.println("Connect:SmartConfig");
     
+    unsigned long startTime = millis();
     while (!WiFi.smartConfigDone()) {
       delay(500);
       Serial.print("#"); M5.Display.print("#");
-      /// 30秒以上接続できなかったら抜ける
-      if ( 30000 < millis() ) {
+      /// 60秒以上接続できなかったら抜ける（時間を延長）
+      if ( millis() - startTime > 60000 ) {
         Serial.println("");
-        Serial.println("Reset");
+        Serial.println("SmartConfig timeout. Reset");
         ESP.restart();
       }
     }
+    Serial.println("\nSmartConfig received!");
+    Serial.printf("SSID: %s\n", WiFi.SSID().c_str());
+    
     /// Wi-fi接続
     Serial.println(""); M5.Display.println("");
-    // Serial.println("接続中:WiFi"); M5.Display.println("接続中:WiFi");
     Serial.println("Connect:WiFi"); M5.Display.println("Connect:WiFi");
+    startTime = millis();
     while (WiFi.status() != WL_CONNECTED) {
       delay(500);
       Serial.print("."); M5.Display.print(".");
       /// 60秒以上接続できなかったら抜ける
-      if ( 60000 < millis() ) {
+      if ( millis() - startTime > 60000 ) {
         Serial.println("");
-        Serial.println("Reset");
+        Serial.println("WiFi connection timeout. Reset");
         ESP.restart();
       }
     }
   }
+  
+  Serial.println("\nWiFi Connected!");
+  Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
 }
 
 /// 会話ロジック
@@ -1148,29 +1192,86 @@ void handle_text_chat_set() {
 
 void setup()
 {
+  // ESP32-S3 USB CDC用に少し待機
+  delay(1000);
+  Serial.begin(115200);
+  delay(500);
+  Serial.println("\n\n=== AI StackChan Minimal ===");
+#ifdef ATOMS3R
+  Serial.println("Board: ATOMS3R");
+#else
+  Serial.println("Board: ATOM Echo");
+#endif
+#if USE_ATOMIC_ECHO_BASE
+  Serial.println("Audio: Atomic Echo Base (ES8311)");
+#else
+  Serial.println("Audio: Internal");
+#endif
+
   auto mem0 = esp_get_free_heap_size(); // check memory size
+  Serial.printf("Free heap: %u bytes\n", mem0);
 
   auto cfg = M5.config();
-	cfg.unit_glass2.pin_sda= I2C_SDA_PIN; // Add for SSD1306
-	cfg.unit_glass2.pin_scl= I2C_SCL_PIN; // Add for SSD1306
+#if !USE_INTERNAL_DISPLAY
+  // 外部ディスプレイ（M5UnitGLASS2）を使用する場合
+  cfg.unit_glass2.pin_sda= I2C_SDA_PIN; // Add for SSD1306
+  cfg.unit_glass2.pin_scl= I2C_SCL_PIN; // Add for SSD1306
+#endif
+
+#if USE_ATOMIC_ECHO_BASE
+  // Atomic Echo Base (ES8311) 用の設定
+  // I2C設定 (ES8311制御用)
+  cfg.internal_imu = false;  // 内部IMUを無効化（I2Cピンを共有する場合）
+  cfg.internal_rtc = false;  // 内部RTCを無効化
+  cfg.external_speaker.atomic_spk = true;  // Atomic SPK/Echo Base を有効化
+#endif
 
   auto mem1 = esp_get_free_heap_size(); // check memory size
 
   M5.begin(cfg);
-	M5.setPrimaryDisplayType({m5::board_t::board_M5UnitGLASS2}); // Add for M5 avatar
+#if !USE_INTERNAL_DISPLAY
+  // 外部ディスプレイをプライマリに設定
+  M5.setPrimaryDisplayType({m5::board_t::board_M5UnitGLASS2}); // Add for M5 avatar
+#endif
   { /// custom setting
     auto spk_cfg = M5.Speaker.config();
     /// Increasing the sample_rate will improve the sound quality instead of increasing the CPU load.
+#if USE_ATOMIC_ECHO_BASE
+    // Atomic Echo Base (ES8311) は高いサンプルレートをサポート
+    spk_cfg.sample_rate = 48000; // ES8311用に48kHz推奨
+#else
     spk_cfg.sample_rate = 96000; // default:64000 (64kHz)  e.g. 48000 , 50000 , 80000 , 96000 , 100000 , 128000 , 144000 , 192000 , 200000
+#endif
     spk_cfg.task_pinned_core = APP_CPU_NUM;
     M5.Speaker.config(spk_cfg);
   }
   M5.Speaker.begin();
   /// set master volume (0~255)
+#if USE_ATOMIC_ECHO_BASE
+  M5.Speaker.setVolume(200);  // Atomic Echo Base は高品質なので音量を上げても問題なし
+#else
   M5.Speaker.setVolume(150);  // Adjust for Atom Echo (DO NOT set over 150. This echo Speaker will be broken.)
+#endif
+
+#if USE_ATOMIC_ECHO_BASE
+  // Atomic Echo Base (ES8311) のマイク設定
+  {
+    auto mic_cfg = M5.Mic.config();
+    mic_cfg.sample_rate = 16000;  // 音声認識用に16kHz
+    mic_cfg.stereo = false;       // モノラル
+    mic_cfg.input_offset = 0;     // 入力オフセット
+    M5.Mic.config(mic_cfg);
+  }
+  // マイクが正しく初期化されたか確認
+  if (M5.Mic.isEnabled()) {
+    Serial.println("Mic: Enabled (ES8311)");
+  } else {
+    Serial.println("Mic: NOT Enabled - Check Atomic Echo Base connection!");
+  }
+#endif
 
   /// シリアル通信機能の設定 via Grove Pin
-  Serial1.begin(19200, SERIAL_8N1, 32, 26); // RX,TX - Grove Pin
+  Serial1.begin(19200, SERIAL_8N1, GROVE_RX_PIN, GROVE_TX_PIN); // RX,TX - Grove Pin
 
   neopixelWrite(LED_PIN, 0, BRIGHTNESS, 0);  // Green
 
@@ -1276,8 +1377,15 @@ void setup()
   Serial.print(WiFi.localIP()); M5.Lcd.print(WiFi.localIP());
   delay(6000);
 
+#if USE_INTERNAL_DISPLAY
+  // ATOMS3R 内蔵ディスプレイ用設定 (128x128)
+  avatar.setScale(0.5);               // Adjust for ATOMS3R internal display
+  avatar.setPosition(-64, -80);       // Adjust for ATOMS3R internal display
+#else
+  // 外部ディスプレイ（M5UnitGLASS2/SSD1306）用設定
   avatar.setScale(.32);               // Adjust for SSD1306
   avatar.setPosition(-92,-100);       // Adjust for SSD1306
+#endif
   avatar.init();                      // Add for M5 avatar
   avatar.addTask(lipSync, "lipSync"); // Add for M5 avatar
 

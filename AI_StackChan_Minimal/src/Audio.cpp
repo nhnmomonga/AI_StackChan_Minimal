@@ -60,12 +60,40 @@ void Audio::CreateWavHeader(byte* header, int waveDataSize){
 }
 
 void Audio::Record() {
+  Serial.println("Audio::Record() - Starting mic...");
+  
   CreateWavHeader(paddedHeader, wavDataSize);
-  M5.Mic.begin();
+  
+  if (!M5.Mic.begin()) {
+    Serial.println("ERROR: Mic.begin() failed!");
+    return;
+  }
+  
+  Serial.printf("Mic enabled: %d, recording %d samples...\n", M5.Mic.isEnabled(), record_number * record_length);
+  
+  int32_t maxLevel = 0;
+  int32_t minLevel = 0;
   int rec_record_idx;
+  
   for (rec_record_idx = 0; rec_record_idx < record_number; rec_record_idx++) {
     auto data = &wavData[rec_record_idx * record_length];
     M5.Mic.record(data, record_length, record_samplerate);
+    
+    // 録音レベルをチェック（最初の数フレームのみ）
+    if (rec_record_idx < 5) {
+      for (int i = 0; i < record_length; i++) {
+        if (data[i] > maxLevel) maxLevel = data[i];
+        if (data[i] < minLevel) minLevel = data[i];
+      }
+    }
   }
+  
+  Serial.printf("Recording done. Audio level: min=%d, max=%d\n", minLevel, maxLevel);
+  
+  // 録音レベルが極端に低い場合は警告
+  if (maxLevel - minLevel < 100) {
+    Serial.println("WARNING: Audio level very low - mic may not be working!");
+  }
+  
   M5.Mic.end();
 }
