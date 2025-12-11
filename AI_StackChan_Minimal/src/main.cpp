@@ -119,6 +119,9 @@ String TEXTAREA = "";
 /// 入力:Webからの入力
 String Toio_ActionID = "";
 
+/// 設定:音量 (0-150, 10段階で調整)
+uint8_t volume_level = 150; // デフォルト値 (0-150の範囲、150を超えるとスピーカーが壊れる可能性)
+
 // DynamicJsonDocument chat_doc(1024*10);
 StaticJsonDocument<768> chat_doc; // Adjust for Atom Echo
 String json_ChatString = "{\"model\": \"gpt-3.5-turbo\",\"messages\": [{\"role\": \"user\", \"content\": \"""\"}]}";
@@ -442,6 +445,77 @@ https://swift-smooth.com/character-list/
 </body>
 </html>)KEWL";
 
+static const char VOLUME_HTML[] PROGMEM = R"KEWL(
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIｽﾀｯｸﾁｬﾝ - 音量設定</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+      }
+      .volume-control {
+        margin: 20px 0;
+      }
+      input[type="range"] {
+        width: 80%;
+        max-width: 400px;
+      }
+      .volume-value {
+        font-size: 24px;
+        font-weight: bold;
+        margin: 10px 0;
+      }
+      button {
+        padding: 10px 20px;
+        margin: 5px;
+        font-size: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>音量設定</h1>
+    <div class="volume-control">
+      <label for="volume">音量レベル (0-10):</label><br>
+      <input type="range" id="volume" name="volume" min="0" max="10" value="10" oninput="updateVolumeDisplay()">
+      <div class="volume-value">レベル: <span id="volumeDisplay">10</span></div>
+    </div>
+    <button type="button" onclick="sendData()">送信する</button>
+    <button type="button" onclick="history.back()">戻る</button>
+    <div style="margin-top: 20px; padding: 10px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 5px;">
+      <strong>注意:</strong> Atom Echoのスピーカーは小型です。<br>
+      • 音量レベル0-10の範囲で調整できます（内部的には0-150にマッピング）<br>
+      • 会話用途ではレベル8-10が推奨です<br>
+      • 最大音量（レベル10=150）を超えると、スピーカーが破損する可能性があります
+    </div>
+    <script>
+      function updateVolumeDisplay() {
+        const volumeValue = document.getElementById("volume").value;
+        document.getElementById("volumeDisplay").textContent = volumeValue;
+      }
+      function sendData() {
+        const formData = new FormData();
+        const volumeValue = document.getElementById("volume").value;
+        formData.append("volume", volumeValue);
+        
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/volume_set");
+        xhr.onload = function() {
+          if (xhr.status === 200) {
+            alert("音量設定を送信しました！");
+          } else {
+            alert("設定の送信に失敗しました。");
+          }
+        };
+        xhr.send(formData);
+      }
+    </script>
+  </body>
+</html>)KEWL";
+
 void handleRoot() {
   String message = "";
   message += "<h1>設定メニュー</h1>";
@@ -449,6 +523,7 @@ void handleRoot() {
   message += "\n  <li><a href='apikey'>APIキー設定</a></li>";
   message += "\n  <li><a href='character_voice'>言語/キャラクター音声の設定</a></li>";
   message += "\n  <li><a href='model_ver'>対話型AIモデルの設定</a></li>";
+  message += "\n  <li><a href='volume'>音量設定</a></li>";
   message += "\n  <li><a href='text_chat'>テキストで会話</a></li>";
   message += "\n  <li><a href='toio_action'>Toioを操作</a></li>";
   message += "\n</ul>";
@@ -620,6 +695,56 @@ void handle_toio_action_set() {
   server.send(200, "text/plain", String("OK"));
   // delay(3000);
   delay(500);
+  avatar.setExpression(Expression::Neutral);
+  avatar.setSpeechText("");
+  neopixelWrite(LED_PIN, 0, 0, 0);          // LED:Off / black
+}
+
+void handle_volume() {
+  /// 現在の音量レベルを取得 (0-150 -> 0-10)
+  int current_level = (volume_level * 10) / 150;
+  if (current_level > 10) current_level = 10;
+  
+  /// HTMLを送信（現在の音量レベルを動的に設定）
+  String html = String(VOLUME_HTML);
+  html.replace("value=\"10\"", "value=\"" + String(current_level) + "\"");
+  html.replace("<span id=\"volumeDisplay\">10</span>", "<span id=\"volumeDisplay\">" + String(current_level) + "</span>");
+  server.send(200, "text/html", html);
+}
+
+void handle_volume_set() {
+  /// POST以外は拒否
+  if (server.method() != HTTP_POST) {
+    return;
+  }
+  
+  /// 音量レベル (0-10)
+  String volume_str = server.arg("volume");
+  int volume_level_int = volume_str.toInt();
+  
+  // 10段階を0-150の範囲にマッピング (150を超えないように)
+  if (volume_level_int < 0) volume_level_int = 0;
+  if (volume_level_int > 10) volume_level_int = 10;
+  
+  volume_level = (uint8_t)((volume_level_int * 150) / 10); // 0-10 -> 0-150
+  
+  Serial.print("Volume Level: "); Serial.println(volume_level);
+  
+  // 音量を設定
+  M5.Speaker.setVolume(volume_level);
+  
+  // NVSに保存
+  uint32_t nvs_handle;
+  if (ESP_OK == nvs_open("setting", NVS_READWRITE, &nvs_handle)) {
+    nvs_set_u8(nvs_handle, "volume", volume_level);
+    nvs_close(nvs_handle);
+  }
+  
+  neopixelWrite(LED_PIN, 0, BRIGHTNESS, 0);  // LED:Green
+  avatar.setExpression(Expression::Happy);
+  avatar.setSpeechText("音量が変更されました");
+  server.send(200, "text/plain", String("OK"));
+  delay(3000);
   avatar.setExpression(Expression::Neutral);
   avatar.setSpeechText("");
   neopixelWrite(LED_PIN, 0, 0, 0);          // LED:Off / black
@@ -1157,8 +1282,6 @@ void setup()
     M5.Speaker.config(spk_cfg);
   }
   M5.Speaker.begin();
-  /// set master volume (0~255)
-  M5.Speaker.setVolume(150);  // Adjust for Atom Echo (DO NOT set over 150. This echo Speaker will be broken.)
 
   /// シリアル通信機能の設定 via Grove Pin
   Serial1.begin(19200, SERIAL_8N1, 32, 26); // RX,TX - Grove Pin
@@ -1173,15 +1296,20 @@ void setup()
     if (ESP_OK == nvs_open("setting", NVS_READONLY, &nvs_handle1)) {
       nvs_get_u8(nvs_handle1, "character", &character);
       nvs_get_u8(nvs_handle1, "model_ver", &model_ver);
+      nvs_get_u8(nvs_handle1, "volume", &volume_level);
       nvs_close(nvs_handle1);
     } else {
       if (ESP_OK == nvs_open("setting", NVS_READWRITE, &nvs_handle1)) {
         nvs_set_u8(nvs_handle1, "character", character);
         nvs_set_u8(nvs_handle1, "model_ver", model_ver);
+        nvs_set_u8(nvs_handle1, "volume", volume_level);
         nvs_close(nvs_handle1);
       }
     }
   }
+  
+  /// set master volume (0~255) from saved settings
+  M5.Speaker.setVolume(volume_level);  // Adjust for Atom Echo (DO NOT set over 150. This echo Speaker will be broken.)
 
   {
     uint32_t nvs_handle;
@@ -1233,6 +1361,8 @@ void setup()
   server.on("/model_ver_set", HTTP_POST, handle_model_set);
   server.on("/text_chat", handle_text_chat);
   server.on("/text_chat_set", HTTP_POST, handle_text_chat_set);
+  server.on("/volume", handle_volume);
+  server.on("/volume_set", HTTP_POST, handle_volume_set);
   server.on("/toio_action", handle_toio_action);
   server.on("/toio_action_set", HTTP_POST, handle_toio_action_set);
   server.onNotFound(handleNotFound);
