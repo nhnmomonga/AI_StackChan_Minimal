@@ -18,6 +18,8 @@
 ***/
 
 #include <Arduino.h>
+#include <Wire.h>         // Add for I2C (ES8311)
+#include "driver/i2c.h"   // ESP-IDF I2C driver for ES8311
 #ifndef ATOMS3R
 #include <M5UnitGLASS2.h> // Add for SSD1306 (only for ATOM Echo with external display)
 #endif
@@ -41,6 +43,7 @@
 #include "Whisper.h"
 #include "Audio.h"
 #include "CloudSpeechClient.h"
+#include "AudioHardware.h"
 #include <deque>
 #include <ESP32WebServer.h> // Add for Web Setting
 
@@ -115,6 +118,89 @@ String message_dont_understand = ""; // Add for Global language
 #define BRIGHTNESS 64 // Adjust for Atom Echo
 /// LEDストリップの色の並び順
 // #define COLOR_ORDER GRB
+
+#if USE_ATOMIC_ECHO_BASE
+#include "es8311.h"
+
+// ES8311 I2C address (CE pin low = 0x18, CE pin high = 0x19)
+#define ES8311_ADDR 0x18
+
+#define ES8311_I2C_PORT     I2C_NUM_1
+#define ES8311_I2C_FREQ     400000
+#define ES8311_SAMPLE_RATE  16000
+
+// ES8311ハンドル
+static es8311_handle_t es8311_handle = nullptr;
+
+// ES8311初期化関数
+bool init_es8311() {
+  Serial.println("Initializing ES8311...");
+  
+  // I2Cドライバをインストール
+  i2c_config_t i2c_conf = {
+    .mode = I2C_MODE_MASTER,
+    .sda_io_num = (gpio_num_t)I2C_SDA_PIN,
+    .scl_io_num = (gpio_num_t)I2C_SCL_PIN,
+    .sda_pullup_en = GPIO_PULLUP_ENABLE,
+    .scl_pullup_en = GPIO_PULLUP_ENABLE,
+    .master = {
+      .clk_speed = ES8311_I2C_FREQ,
+    },
+    .clk_flags = 0,
+  };
+  
+  esp_err_t ret = i2c_param_config(ES8311_I2C_PORT, &i2c_conf);
+  if (ret != ESP_OK) {
+    Serial.println("ES8311: I2C param config failed");
+    return false;
+  }
+  
+  ret = i2c_driver_install(ES8311_I2C_PORT, i2c_conf.mode, 0, 0, 0);
+  if (ret != ESP_OK) {
+    Serial.println("ES8311: I2C driver install failed");
+    return false;
+  }
+  
+  // ES8311ハンドルを作成
+  es8311_handle = es8311_create(ES8311_I2C_PORT, ES8311_ADDRRES_0);
+  if (es8311_handle == nullptr) {
+    Serial.println("ES8311: Failed to create handle");
+    return false;
+  }
+  
+  // ES8311クロック設定
+  es8311_clock_config_t clk_cfg = {
+    .mclk_inverted = false,
+    .sclk_inverted = false,
+    .mclk_from_mclk_pin = true,
+    .mclk_frequency = ES8311_MCLK_FREQ,
+    .sample_frequency = ES8311_SAMPLE_RATE,
+  };
+  
+  ret = es8311_init(es8311_handle, &clk_cfg, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16);
+  if (ret != ESP_OK) {
+    Serial.println("ES8311: init failed");
+    return false;
+  }
+  
+  // 音量設定
+  es8311_voice_volume_set(es8311_handle, 80, NULL);
+  
+  // マイク設定 (false = ゲイン低め、true = ゲイン高め)
+  es8311_microphone_config(es8311_handle, false);
+  es8311_microphone_gain_set(es8311_handle, ES8311_MIC_GAIN_42DB);
+  
+  Serial.println("ES8311: Initialized successfully");
+
+  // この時点でクロックやゲイン設定は完了しているため、
+  // M5Unified 側の I2C 初期化と競合しないようドライバを解放する。
+  i2c_driver_delete(ES8311_I2C_PORT);
+  es8311_delete(es8311_handle);
+  es8311_handle = nullptr;
+  return true;
+}
+#endif
+
 /// 保存する質問と回答の最大数
 const int MAX_HISTORY = 2; // Adjust for Atom Echo
 /// 過去の質問と回答を保存するデータ構造
@@ -1057,12 +1143,41 @@ void Wifi_setup() { // Add for Web Setting (SmartConfig)
 
 /// 会話ロジック
 void start_talking() {
+  Serial.println("start_talking() called");
+  Serial.flush();
+  
   M5.Speaker.tone(1000, 100);
   delay(200);
+  
+  Serial.println("Setting avatar expression...");
+  Serial.flush();
+  
   avatar.setExpression(Expression::Happy);
   avatar.setSpeechText(message_help_you.c_str());
   neopixelWrite(LED_PIN, 0, 0, BRIGHTNESS);  // LED:Blue
-  M5.Speaker.end();
+  
+  if (M5.Speaker.isEnabled()) {
+    Serial.println("Stopping speaker before recording...");
+    Serial.flush();
+    
+    // トーン再生が完全に終わるまで待つ
+    while (M5.Speaker.isPlaying()) {
+      delay(10);
+    }
+    
+    // スピーカーを停止（タイムアウト付き）
+    M5.Speaker.stop();
+    delay(50);
+    M5.Speaker.end();
+    delay(100);  // ES8311の切り替え待ち
+  } else {
+    Serial.println("Speaker already disabled, skipping stop.");
+    Serial.flush();
+  }
+  
+  Serial.println("Speaker stopped, starting STT...");
+  Serial.flush();
+  
   String ret;
 
   CHARACTER_VOICE Chr_Vic;
@@ -1090,16 +1205,21 @@ void start_talking() {
   }
   TTS_PARMS = TTS_SPEAKER + String(Chr_Vic.normal) ; // ノーマル
   
+  Serial.println("Checking TEXTAREA and API keys...");
+  Serial.flush();
+  
   /// 音声認識：テキスト入力がある場合は、テキストを優先する
   if ( TEXTAREA == "" ) {
     if(OPENAI_API_KEY == ""){  // Add for Web Setting
       Serial.println("Error: No API-Key Setting");
       ret = "Error: No API-Key Setting";
     } else if(OPENAI_API_KEY != STT_API_KEY){
-      Serial.println("Google STT");
+      Serial.println("Google STT - calling SpeechToText(true)");
+      Serial.flush();
       ret = SpeechToText(true);
     } else {
-      Serial.println("Whisper STT");
+      Serial.println("Whisper STT - calling SpeechToText(false)");
+      Serial.flush();
       ret = SpeechToText(false);
     }
   } else {
@@ -1212,6 +1332,16 @@ void setup()
   Serial.printf("Free heap: %u bytes\n", mem0);
 
   auto cfg = M5.config();
+
+#if USE_ATOMIC_ECHO_BASE
+  // ES8311を初期化（espressif/es8311ライブラリ使用）
+  if (init_es8311()) {
+    Serial.println("ES8311 codec initialized");
+  } else {
+    Serial.println("ERROR: ES8311 codec initialization failed!");
+  }
+#endif
+
 #if !USE_INTERNAL_DISPLAY
   // 外部ディスプレイ（M5UnitGLASS2）を使用する場合
   cfg.unit_glass2.pin_sda= I2C_SDA_PIN; // Add for SSD1306
@@ -1220,15 +1350,79 @@ void setup()
 
 #if USE_ATOMIC_ECHO_BASE
   // Atomic Echo Base (ES8311) 用の設定
-  // I2C設定 (ES8311制御用)
-  cfg.internal_imu = false;  // 内部IMUを無効化（I2Cピンを共有する場合）
+  cfg.internal_imu = false;  // 内部IMUを無効化
   cfg.internal_rtc = false;  // 内部RTCを無効化
-  cfg.external_speaker.atomic_spk = true;  // Atomic SPK/Echo Base を有効化
+  cfg.internal_mic = false;  // 内蔵マイクを無効化
+  cfg.internal_spk = false;  // 内蔵スピーカーを無効化
+  
+  // Atomic Echo Base (ES8311) を有効化
+  cfg.external_speaker.atomic_spk = true;
+  cfg.external_speaker.atomic_echo = true;
 #endif
 
   auto mem1 = esp_get_free_heap_size(); // check memory size
 
+  Serial.println("Calling M5.begin()...");
   M5.begin(cfg);
+  Serial.println("M5.begin() done.");
+  Serial.flush();  // 確実に出力を送信
+  delay(100);
+  
+  // M5Unifiedが認識したボード情報を表示
+  Serial.print("M5 Board: ");
+  Serial.println((int)M5.getBoard());
+  Serial.flush();
+  
+#if USE_ATOMIC_ECHO_BASE
+  // M5.begin後にスピーカーとマイクの状態を確認
+  Serial.print("Speaker enabled: ");
+  Serial.println(M5.Speaker.isEnabled());
+  Serial.print("Mic enabled: ");
+  Serial.println(M5.Mic.isEnabled());
+  Serial.flush();
+  
+  // Speaker/Micが無効な場合、手動で初期化を試みる
+  // 注意: ES8311は半二重なので、SpeakerとMicを同時に初期化しない
+  // 起動時はSpeakerのみ初期化し、録音時にMicに切り替える
+  // ピン配置はM5Stack公式SDKより: https://github.com/m5stack/openai-realtime-embedded-sdk
+  if (!M5.Speaker.isEnabled()) {
+    Serial.println("Trying to manually initialize speaker...");
+    Serial.flush();
+    
+    // スピーカーを手動で開始
+    M5.Speaker.end();
+    auto spk_cfg = M5.Speaker.config();
+    spk_cfg.sample_rate = 16000;   // ES8311は8KHzをサポートしない
+  spk_cfg.pin_bck = ES8311_BCLK_PIN;
+  spk_cfg.pin_ws = ES8311_LRCK_PIN;
+  spk_cfg.pin_data_out = ES8311_DATA_OUT_PIN;
+  spk_cfg.pin_mck = ES8311_MCLK_PIN;
+    spk_cfg.i2s_port = I2S_NUM_1;
+    M5.Speaker.config(spk_cfg);
+    M5.Speaker.begin();
+    
+    Serial.print("After manual init - Speaker enabled: ");
+    Serial.println(M5.Speaker.isEnabled());
+    Serial.flush();
+    
+    // マイクの設定は保存するが、開始はしない（録音時に開始する）
+    auto mic_cfg = M5.Mic.config();
+    mic_cfg.sample_rate = 16000;   // ES8311は8KHzをサポートしない
+  mic_cfg.pin_bck = ES8311_BCLK_PIN;
+  mic_cfg.pin_ws = ES8311_LRCK_PIN;
+  mic_cfg.pin_data_in = ES8311_DATA_IN_PIN;
+  mic_cfg.pin_mck = ES8311_MCLK_PIN;
+    mic_cfg.i2s_port = I2S_NUM_1;
+    mic_cfg.stereo = false;
+    M5.Mic.config(mic_cfg);
+    // M5.Mic.begin() は録音時に呼ぶ
+    
+    Serial.println("Mic configured (will start when recording)");
+    Serial.println("Pin config: BCLK=8, LRCK=6, DATA_OUT=5, DATA_IN=7");
+    Serial.flush();
+  }
+#endif
+
 #if !USE_INTERNAL_DISPLAY
   // 外部ディスプレイをプライマリに設定
   M5.setPrimaryDisplayType({m5::board_t::board_M5UnitGLASS2}); // Add for M5 avatar
@@ -1237,12 +1431,18 @@ void setup()
     auto spk_cfg = M5.Speaker.config();
     /// Increasing the sample_rate will improve the sound quality instead of increasing the CPU load.
 #if USE_ATOMIC_ECHO_BASE
-    // Atomic Echo Base (ES8311) は高いサンプルレートをサポート
-    spk_cfg.sample_rate = 48000; // ES8311用に48kHz推奨
+  // CodecとI2Sを同期させるため16kHzに揃える
+  spk_cfg.sample_rate = ES8311_SAMPLE_RATE;
 #else
     spk_cfg.sample_rate = 96000; // default:64000 (64kHz)  e.g. 48000 , 50000 , 80000 , 96000 , 100000 , 128000 , 144000 , 192000 , 200000
 #endif
     spk_cfg.task_pinned_core = APP_CPU_NUM;
+#if USE_ATOMIC_ECHO_BASE
+  spk_cfg.pin_bck = ES8311_BCLK_PIN;
+  spk_cfg.pin_ws = ES8311_LRCK_PIN;
+  spk_cfg.pin_data_out = ES8311_DATA_OUT_PIN;
+  spk_cfg.pin_mck = ES8311_MCLK_PIN;
+#endif
     M5.Speaker.config(spk_cfg);
   }
   M5.Speaker.begin();
@@ -1259,7 +1459,11 @@ void setup()
     auto mic_cfg = M5.Mic.config();
     mic_cfg.sample_rate = 16000;  // 音声認識用に16kHz
     mic_cfg.stereo = false;       // モノラル
-    mic_cfg.input_offset = 0;     // 入力オフセット
+  mic_cfg.pin_bck = ES8311_BCLK_PIN;
+  mic_cfg.pin_ws = ES8311_LRCK_PIN;
+  mic_cfg.pin_data_in = ES8311_DATA_IN_PIN;
+  mic_cfg.pin_mck = ES8311_MCLK_PIN;
+  mic_cfg.i2s_port = I2S_NUM_1;
     M5.Mic.config(mic_cfg);
   }
   // マイクが正しく初期化されたか確認
