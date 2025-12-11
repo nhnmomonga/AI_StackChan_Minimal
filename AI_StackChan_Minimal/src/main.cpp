@@ -119,7 +119,7 @@ String TEXTAREA = "";
 /// 入力:Webからの入力
 String Toio_ActionID = "";
 
-/// 設定:音量 (0-255, 10段階で調整)
+/// 設定:音量 (0-150, 10段階で調整)
 uint8_t volume_level = 150; // デフォルト値 (0-150の範囲、150を超えるとスピーカーが壊れる可能性)
 
 // DynamicJsonDocument chat_doc(1024*10);
@@ -702,7 +702,7 @@ void handle_toio_action_set() {
 
 void handle_volume() {
   /// 現在の音量レベルを取得 (0-150 -> 0-10)
-  int current_level = volume_level / 15;
+  int current_level = (volume_level * 10) / 150;
   if (current_level > 10) current_level = 10;
   
   /// HTMLを送信（現在の音量レベルを動的に設定）
@@ -726,7 +726,7 @@ void handle_volume_set() {
   if (volume_level_int < 0) volume_level_int = 0;
   if (volume_level_int > 10) volume_level_int = 10;
   
-  volume_level = (uint8_t)(volume_level_int * 15); // 0-10 -> 0-150
+  volume_level = (uint8_t)((volume_level_int * 150) / 10); // 0-10 -> 0-150
   
   Serial.print("Volume Level: "); Serial.println(volume_level);
   
