@@ -486,8 +486,10 @@ static const char VOLUME_HTML[] PROGMEM = R"KEWL(
     <button type="button" onclick="sendData()">送信する</button>
     <button type="button" onclick="history.back()">戻る</button>
     <div style="margin-top: 20px; padding: 10px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 5px;">
-      <strong>注意:</strong> Atom Echoのスピーカーは小型のため、音量レベルは10段階で調整できます。<br>
-      推奨: レベル8-10 (音量が大きすぎると、スピーカーが破損する可能性があります)
+      <strong>注意:</strong> Atom Echoのスピーカーは小型です。<br>
+      • 音量レベル0-10の範囲で調整できます（内部的には0-150にマッピング）<br>
+      • 会話用途ではレベル8-10が推奨です<br>
+      • 最大音量（レベル10=150）を超えると、スピーカーが破損する可能性があります
     </div>
     <script>
       function updateVolumeDisplay() {
@@ -699,8 +701,15 @@ void handle_toio_action_set() {
 }
 
 void handle_volume() {
-  /// ファイルを読み込み、クライアントに送信する
-  server.send(200, "text/html", VOLUME_HTML);
+  /// 現在の音量レベルを取得 (0-150 -> 0-10)
+  int current_level = volume_level / 15;
+  if (current_level > 10) current_level = 10;
+  
+  /// HTMLを送信（現在の音量レベルを動的に設定）
+  String html = String(VOLUME_HTML);
+  html.replace("value=\"10\"", "value=\"" + String(current_level) + "\"");
+  html.replace("<span id=\"volumeDisplay\">10</span>", "<span id=\"volumeDisplay\">" + String(current_level) + "</span>");
+  server.send(200, "text/html", html);
 }
 
 void handle_volume_set() {
