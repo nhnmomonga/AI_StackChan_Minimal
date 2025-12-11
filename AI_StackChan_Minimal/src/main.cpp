@@ -18,11 +18,7 @@
 ***/
 
 #include <Arduino.h>
-#include <Wire.h>         // Add for I2C (ES8311)
-#include "driver/i2c.h"   // ESP-IDF I2C driver for ES8311
-#ifndef ATOMS3R
-#include <M5UnitGLASS2.h> // Add for SSD1306 (only for ATOM Echo with external display)
-#endif
+#include <M5UnitGLASS2.h> // Add for SSD1306
 #include <SPIFFS.h>       // Add for Web Setting
 #include <M5Unified.h>
 #include <nvs.h>          // Add for Web Setting
@@ -43,7 +39,6 @@
 #include "Whisper.h"
 #include "Audio.h"
 #include "CloudSpeechClient.h"
-#include "AudioHardware.h"
 #include <deque>
 #include <ESP32WebServer.h> // Add for Web Setting
 
@@ -81,126 +76,16 @@ String message_dont_understand = ""; // Add for Global language
 /// 接続：Wifiは[スマホアプリ(EspTouch)]、また[APIキーはブラウザ]から設定します。
 
 /// I2C接続のピン番号 // Add for SSD1306
-#ifdef ATOMS3R
-  // ATOMS3R + Atomic Echo Base の設定
-  #define I2C_SDA_PIN 38  // G38 (I2C SDA) - ES8311制御用
-  #define I2C_SCL_PIN 39  // G39 (I2C SCL)
-  /// LEDストリップのピン番号
-  #define LED_PIN     35  // G35 (内蔵 RGB LED)
-  /// Groveピン (Serial1用) - Atomic Echo Base 経由
-  #define GROVE_RX_PIN 5  // G5 (Atomic Echo BaseのGrove)
-  #define GROVE_TX_PIN 6  // G6 (Atomic Echo BaseのGrove)
-  /// 内蔵ディスプレイを使用するかどうか（外部ディスプレイ M5UnitGLASS2 を使用しない場合はtrue）
-  #define USE_INTERNAL_DISPLAY true
-  /// Atomic Echo Base (ES8311) を使用 - platformio.iniで定義されていない場合のデフォルト
-  #ifndef USE_ATOMIC_ECHO_BASE
-    #define USE_ATOMIC_ECHO_BASE true
-  #endif
-#else
-  // ATOM Echo の設定（後方互換性）
-  #define I2C_SDA_PIN 21  // G21 (I2C SDA)
-  #define I2C_SCL_PIN 25  // G25 (I2C SCL)
-  /// LEDストリップのピン番号
-  #define LED_PIN     27  // G27 (内蔵 RGB LED)
-  /// Groveピン (Serial1用)
-  #define GROVE_RX_PIN 32
-  #define GROVE_TX_PIN 26
-  /// 外部ディスプレイを使用
-  #define USE_INTERNAL_DISPLAY false
-  /// 内蔵スピーカー・マイクを使用
-  #ifndef USE_ATOMIC_ECHO_BASE
-    #define USE_ATOMIC_ECHO_BASE false
-  #endif
-#endif
+#define I2C_SDA_PIN 21
+#define I2C_SCL_PIN 25
+/// LEDストリップのピン番号
+#define LED_PIN     27
 /// LEDストリップのLED数
 #define NUM_LEDS    1
 /// LED明るさ
 #define BRIGHTNESS 64 // Adjust for Atom Echo
 /// LEDストリップの色の並び順
 // #define COLOR_ORDER GRB
-
-#if USE_ATOMIC_ECHO_BASE
-#include "es8311.h"
-
-// ES8311 I2C address (CE pin low = 0x18, CE pin high = 0x19)
-#define ES8311_ADDR 0x18
-
-#define ES8311_I2C_PORT     I2C_NUM_1
-#define ES8311_I2C_FREQ     400000
-#define ES8311_SAMPLE_RATE  16000
-
-// ES8311ハンドル
-static es8311_handle_t es8311_handle = nullptr;
-
-// ES8311初期化関数
-bool init_es8311() {
-  Serial.println("Initializing ES8311...");
-  
-  // I2Cドライバをインストール
-  i2c_config_t i2c_conf = {
-    .mode = I2C_MODE_MASTER,
-    .sda_io_num = (gpio_num_t)I2C_SDA_PIN,
-    .scl_io_num = (gpio_num_t)I2C_SCL_PIN,
-    .sda_pullup_en = GPIO_PULLUP_ENABLE,
-    .scl_pullup_en = GPIO_PULLUP_ENABLE,
-    .master = {
-      .clk_speed = ES8311_I2C_FREQ,
-    },
-    .clk_flags = 0,
-  };
-  
-  esp_err_t ret = i2c_param_config(ES8311_I2C_PORT, &i2c_conf);
-  if (ret != ESP_OK) {
-    Serial.println("ES8311: I2C param config failed");
-    return false;
-  }
-  
-  ret = i2c_driver_install(ES8311_I2C_PORT, i2c_conf.mode, 0, 0, 0);
-  if (ret != ESP_OK) {
-    Serial.println("ES8311: I2C driver install failed");
-    return false;
-  }
-  
-  // ES8311ハンドルを作成
-  es8311_handle = es8311_create(ES8311_I2C_PORT, ES8311_ADDRRES_0);
-  if (es8311_handle == nullptr) {
-    Serial.println("ES8311: Failed to create handle");
-    return false;
-  }
-  
-  // ES8311クロック設定
-  es8311_clock_config_t clk_cfg = {
-    .mclk_inverted = false,
-    .sclk_inverted = false,
-    .mclk_from_mclk_pin = true,
-    .mclk_frequency = ES8311_MCLK_FREQ,
-    .sample_frequency = ES8311_SAMPLE_RATE,
-  };
-  
-  ret = es8311_init(es8311_handle, &clk_cfg, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16);
-  if (ret != ESP_OK) {
-    Serial.println("ES8311: init failed");
-    return false;
-  }
-  
-  // 音量設定
-  es8311_voice_volume_set(es8311_handle, 80, NULL);
-  
-  // マイク設定 (false = ゲイン低め、true = ゲイン高め)
-  es8311_microphone_config(es8311_handle, false);
-  es8311_microphone_gain_set(es8311_handle, ES8311_MIC_GAIN_42DB);
-  
-  Serial.println("ES8311: Initialized successfully");
-
-  // この時点でクロックやゲイン設定は完了しているため、
-  // M5Unified 側の I2C 初期化と競合しないようドライバを解放する。
-  i2c_driver_delete(ES8311_I2C_PORT);
-  es8311_delete(es8311_handle);
-  es8311_handle = nullptr;
-  return true;
-}
-#endif
-
 /// 保存する質問と回答の最大数
 const int MAX_HISTORY = 2; // Adjust for Atom Echo
 /// 過去の質問と回答を保存するデータ構造
@@ -1066,118 +951,65 @@ void lipSync(void *args)  // Add for M5 avatar
 }
 
 void Wifi_setup() { // Add for Web Setting (SmartConfig)
+  // Serial.println("接続中:WiFi"); M5.Display.println("接続中:WiFi");
   Serial.println("Connect:WiFi"); M5.Display.println("Connect:WiFi");
-  
-  // WiFi初期化
-  WiFi.disconnect(true, true);  // 切断してNVSのWiFi設定もクリア
-  delay(500);
-  WiFi.mode(WIFI_OFF);
-  delay(500);
-  WiFi.mode(WIFI_STA);
-  delay(500);
-  
-  // 保存されたWiFi情報があるか確認
-  String savedSSID = WiFi.SSID();
-  Serial.printf("Saved SSID: [%s]\n", savedSSID.c_str());
-  
-  if (savedSSID.length() > 0) {
-    // 保存されたWiFi情報で接続を試みる
-    Serial.println("Trying saved WiFi credentials...");
-    WiFi.begin();
+  WiFi.disconnect();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA); 
+  WiFi.begin();
 
-    /// 前回接続時情報で接続する
-    unsigned long startTime = millis();
-    while (WiFi.status() != WL_CONNECTED) {
-      Serial.print("."); M5.Display.print(".");
-      delay(500);
-      /// 10秒以上接続できなかったら抜ける
-      if ( millis() - startTime > 10000 ) {
-        break;
-      }
+  /// 前回接続時情報で接続する
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print("."); M5.Display.print(".");
+    delay(500);
+    /// 10秒以上接続できなかったら抜ける
+    if ( 10000 < millis() ) {
+      break;
     }
-    Serial.println(""); M5.Display.println("");
   }
-  
+  Serial.println(""); M5.Display.println("");
   /// 未接続の場合にはSmartConfig待受
   if ( WiFi.status() != WL_CONNECTED ) {
-    Serial.println("Starting SmartConfig...");
-    Serial.println("Use EspTouch app to configure WiFi");
     WiFi.mode(WIFI_STA);
-    delay(100);
     WiFi.beginSmartConfig();
+    // Serial.println("接続中:SmartConfig"); M5.Display.println("接続中:SmartConfig");
     Serial.println("Connect:SmartConfig"); M5.Display.println("Connect:SmartConfig");
     
-    unsigned long startTime = millis();
     while (!WiFi.smartConfigDone()) {
       delay(500);
       Serial.print("#"); M5.Display.print("#");
-      /// 60秒以上接続できなかったら抜ける（時間を延長）
-      if ( millis() - startTime > 60000 ) {
+      /// 30秒以上接続できなかったら抜ける
+      if ( 30000 < millis() ) {
         Serial.println("");
-        Serial.println("SmartConfig timeout. Reset");
+        Serial.println("Reset");
         ESP.restart();
       }
     }
-    Serial.println("\nSmartConfig received!");
-    Serial.printf("SSID: %s\n", WiFi.SSID().c_str());
-    
     /// Wi-fi接続
     Serial.println(""); M5.Display.println("");
+    // Serial.println("接続中:WiFi"); M5.Display.println("接続中:WiFi");
     Serial.println("Connect:WiFi"); M5.Display.println("Connect:WiFi");
-    startTime = millis();
     while (WiFi.status() != WL_CONNECTED) {
       delay(500);
       Serial.print("."); M5.Display.print(".");
       /// 60秒以上接続できなかったら抜ける
-      if ( millis() - startTime > 60000 ) {
+      if ( 60000 < millis() ) {
         Serial.println("");
-        Serial.println("WiFi connection timeout. Reset");
+        Serial.println("Reset");
         ESP.restart();
       }
     }
   }
-  
-  Serial.println("\nWiFi Connected!");
-  Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
 }
 
 /// 会話ロジック
 void start_talking() {
-  Serial.println("start_talking() called");
-  Serial.flush();
-  
   M5.Speaker.tone(1000, 100);
   delay(200);
-  
-  Serial.println("Setting avatar expression...");
-  Serial.flush();
-  
   avatar.setExpression(Expression::Happy);
   avatar.setSpeechText(message_help_you.c_str());
   neopixelWrite(LED_PIN, 0, 0, BRIGHTNESS);  // LED:Blue
-  
-  if (M5.Speaker.isEnabled()) {
-    Serial.println("Stopping speaker before recording...");
-    Serial.flush();
-    
-    // トーン再生が完全に終わるまで待つ
-    while (M5.Speaker.isPlaying()) {
-      delay(10);
-    }
-    
-    // スピーカーを停止（タイムアウト付き）
-    M5.Speaker.stop();
-    delay(50);
-    M5.Speaker.end();
-    delay(100);  // ES8311の切り替え待ち
-  } else {
-    Serial.println("Speaker already disabled, skipping stop.");
-    Serial.flush();
-  }
-  
-  Serial.println("Speaker stopped, starting STT...");
-  Serial.flush();
-  
+  M5.Speaker.end();
   String ret;
 
   CHARACTER_VOICE Chr_Vic;
@@ -1205,21 +1037,16 @@ void start_talking() {
   }
   TTS_PARMS = TTS_SPEAKER + String(Chr_Vic.normal) ; // ノーマル
   
-  Serial.println("Checking TEXTAREA and API keys...");
-  Serial.flush();
-  
   /// 音声認識：テキスト入力がある場合は、テキストを優先する
   if ( TEXTAREA == "" ) {
     if(OPENAI_API_KEY == ""){  // Add for Web Setting
       Serial.println("Error: No API-Key Setting");
       ret = "Error: No API-Key Setting";
     } else if(OPENAI_API_KEY != STT_API_KEY){
-      Serial.println("Google STT - calling SpeechToText(true)");
-      Serial.flush();
+      Serial.println("Google STT");
       ret = SpeechToText(true);
     } else {
-      Serial.println("Whisper STT - calling SpeechToText(false)");
-      Serial.flush();
+      Serial.println("Whisper STT");
       ret = SpeechToText(false);
     }
   } else {
@@ -1312,170 +1139,29 @@ void handle_text_chat_set() {
 
 void setup()
 {
-  // ESP32-S3 USB CDC用に少し待機
-  delay(1000);
-  Serial.begin(115200);
-  delay(500);
-  Serial.println("\n\n=== AI StackChan Minimal ===");
-#ifdef ATOMS3R
-  Serial.println("Board: ATOMS3R");
-#else
-  Serial.println("Board: ATOM Echo");
-#endif
-#if USE_ATOMIC_ECHO_BASE
-  Serial.println("Audio: Atomic Echo Base (ES8311)");
-#else
-  Serial.println("Audio: Internal");
-#endif
-
   auto mem0 = esp_get_free_heap_size(); // check memory size
-  Serial.printf("Free heap: %u bytes\n", mem0);
 
   auto cfg = M5.config();
-
-#if USE_ATOMIC_ECHO_BASE
-  // ES8311を初期化（espressif/es8311ライブラリ使用）
-  if (init_es8311()) {
-    Serial.println("ES8311 codec initialized");
-  } else {
-    Serial.println("ERROR: ES8311 codec initialization failed!");
-  }
-#endif
-
-#if !USE_INTERNAL_DISPLAY
-  // 外部ディスプレイ（M5UnitGLASS2）を使用する場合
-  cfg.unit_glass2.pin_sda= I2C_SDA_PIN; // Add for SSD1306
-  cfg.unit_glass2.pin_scl= I2C_SCL_PIN; // Add for SSD1306
-#endif
-
-#if USE_ATOMIC_ECHO_BASE
-  // Atomic Echo Base (ES8311) 用の設定
-  cfg.internal_imu = false;  // 内部IMUを無効化
-  cfg.internal_rtc = false;  // 内部RTCを無効化
-  cfg.internal_mic = false;  // 内蔵マイクを無効化
-  cfg.internal_spk = false;  // 内蔵スピーカーを無効化
-  
-  // Atomic Echo Base (ES8311) を有効化
-  cfg.external_speaker.atomic_spk = true;
-  cfg.external_speaker.atomic_echo = true;
-#endif
+	cfg.unit_glass2.pin_sda= I2C_SDA_PIN; // Add for SSD1306
+	cfg.unit_glass2.pin_scl= I2C_SCL_PIN; // Add for SSD1306
 
   auto mem1 = esp_get_free_heap_size(); // check memory size
 
-  Serial.println("Calling M5.begin()...");
   M5.begin(cfg);
-  Serial.println("M5.begin() done.");
-  Serial.flush();  // 確実に出力を送信
-  delay(100);
-  
-  // M5Unifiedが認識したボード情報を表示
-  Serial.print("M5 Board: ");
-  Serial.println((int)M5.getBoard());
-  Serial.flush();
-  
-#if USE_ATOMIC_ECHO_BASE
-  // M5.begin後にスピーカーとマイクの状態を確認
-  Serial.print("Speaker enabled: ");
-  Serial.println(M5.Speaker.isEnabled());
-  Serial.print("Mic enabled: ");
-  Serial.println(M5.Mic.isEnabled());
-  Serial.flush();
-  
-  // Speaker/Micが無効な場合、手動で初期化を試みる
-  // 注意: ES8311は半二重なので、SpeakerとMicを同時に初期化しない
-  // 起動時はSpeakerのみ初期化し、録音時にMicに切り替える
-  // ピン配置はM5Stack公式SDKより: https://github.com/m5stack/openai-realtime-embedded-sdk
-  if (!M5.Speaker.isEnabled()) {
-    Serial.println("Trying to manually initialize speaker...");
-    Serial.flush();
-    
-    // スピーカーを手動で開始
-    M5.Speaker.end();
-    auto spk_cfg = M5.Speaker.config();
-    spk_cfg.sample_rate = 16000;   // ES8311は8KHzをサポートしない
-  spk_cfg.pin_bck = ES8311_BCLK_PIN;
-  spk_cfg.pin_ws = ES8311_LRCK_PIN;
-  spk_cfg.pin_data_out = ES8311_DATA_OUT_PIN;
-  spk_cfg.pin_mck = ES8311_MCLK_PIN;
-    spk_cfg.i2s_port = I2S_NUM_1;
-    M5.Speaker.config(spk_cfg);
-    M5.Speaker.begin();
-    
-    Serial.print("After manual init - Speaker enabled: ");
-    Serial.println(M5.Speaker.isEnabled());
-    Serial.flush();
-    
-    // マイクの設定は保存するが、開始はしない（録音時に開始する）
-    auto mic_cfg = M5.Mic.config();
-    mic_cfg.sample_rate = 16000;   // ES8311は8KHzをサポートしない
-  mic_cfg.pin_bck = ES8311_BCLK_PIN;
-  mic_cfg.pin_ws = ES8311_LRCK_PIN;
-  mic_cfg.pin_data_in = ES8311_DATA_IN_PIN;
-  mic_cfg.pin_mck = ES8311_MCLK_PIN;
-    mic_cfg.i2s_port = I2S_NUM_1;
-    mic_cfg.stereo = false;
-    M5.Mic.config(mic_cfg);
-    // M5.Mic.begin() は録音時に呼ぶ
-    
-    Serial.println("Mic configured (will start when recording)");
-    Serial.println("Pin config: BCLK=8, LRCK=6, DATA_OUT=5, DATA_IN=7");
-    Serial.flush();
-  }
-#endif
-
-#if !USE_INTERNAL_DISPLAY
-  // 外部ディスプレイをプライマリに設定
-  M5.setPrimaryDisplayType({m5::board_t::board_M5UnitGLASS2}); // Add for M5 avatar
-#endif
+	M5.setPrimaryDisplayType({m5::board_t::board_M5UnitGLASS2}); // Add for M5 avatar
   { /// custom setting
     auto spk_cfg = M5.Speaker.config();
     /// Increasing the sample_rate will improve the sound quality instead of increasing the CPU load.
-#if USE_ATOMIC_ECHO_BASE
-  // CodecとI2Sを同期させるため16kHzに揃える
-  spk_cfg.sample_rate = ES8311_SAMPLE_RATE;
-#else
     spk_cfg.sample_rate = 96000; // default:64000 (64kHz)  e.g. 48000 , 50000 , 80000 , 96000 , 100000 , 128000 , 144000 , 192000 , 200000
-#endif
     spk_cfg.task_pinned_core = APP_CPU_NUM;
-#if USE_ATOMIC_ECHO_BASE
-  spk_cfg.pin_bck = ES8311_BCLK_PIN;
-  spk_cfg.pin_ws = ES8311_LRCK_PIN;
-  spk_cfg.pin_data_out = ES8311_DATA_OUT_PIN;
-  spk_cfg.pin_mck = ES8311_MCLK_PIN;
-#endif
     M5.Speaker.config(spk_cfg);
   }
   M5.Speaker.begin();
   /// set master volume (0~255)
-#if USE_ATOMIC_ECHO_BASE
-  M5.Speaker.setVolume(200);  // Atomic Echo Base は高品質なので音量を上げても問題なし
-#else
   M5.Speaker.setVolume(150);  // Adjust for Atom Echo (DO NOT set over 150. This echo Speaker will be broken.)
-#endif
-
-#if USE_ATOMIC_ECHO_BASE
-  // Atomic Echo Base (ES8311) のマイク設定
-  {
-    auto mic_cfg = M5.Mic.config();
-    mic_cfg.sample_rate = 16000;  // 音声認識用に16kHz
-    mic_cfg.stereo = false;       // モノラル
-  mic_cfg.pin_bck = ES8311_BCLK_PIN;
-  mic_cfg.pin_ws = ES8311_LRCK_PIN;
-  mic_cfg.pin_data_in = ES8311_DATA_IN_PIN;
-  mic_cfg.pin_mck = ES8311_MCLK_PIN;
-  mic_cfg.i2s_port = I2S_NUM_1;
-    M5.Mic.config(mic_cfg);
-  }
-  // マイクが正しく初期化されたか確認
-  if (M5.Mic.isEnabled()) {
-    Serial.println("Mic: Enabled (ES8311)");
-  } else {
-    Serial.println("Mic: NOT Enabled - Check Atomic Echo Base connection!");
-  }
-#endif
 
   /// シリアル通信機能の設定 via Grove Pin
-  Serial1.begin(19200, SERIAL_8N1, GROVE_RX_PIN, GROVE_TX_PIN); // RX,TX - Grove Pin
+  Serial1.begin(19200, SERIAL_8N1, 32, 26); // RX,TX - Grove Pin
 
   neopixelWrite(LED_PIN, 0, BRIGHTNESS, 0);  // Green
 
@@ -1581,15 +1267,8 @@ void setup()
   Serial.print(WiFi.localIP()); M5.Lcd.print(WiFi.localIP());
   delay(6000);
 
-#if USE_INTERNAL_DISPLAY
-  // ATOMS3R 内蔵ディスプレイ用設定 (128x128)
-  avatar.setScale(0.5);               // Adjust for ATOMS3R internal display
-  avatar.setPosition(-64, -80);       // Adjust for ATOMS3R internal display
-#else
-  // 外部ディスプレイ（M5UnitGLASS2/SSD1306）用設定
   avatar.setScale(.32);               // Adjust for SSD1306
   avatar.setPosition(-92,-100);       // Adjust for SSD1306
-#endif
   avatar.init();                      // Add for M5 avatar
   avatar.addTask(lipSync, "lipSync"); // Add for M5 avatar
 
